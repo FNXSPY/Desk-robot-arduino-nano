@@ -1,0 +1,269 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Servo.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define TOUCH_PIN 2
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+Servo servoBase;
+Servo servoTilt;
+
+// ===== SERVO =====
+float basePos = 90, tiltPos = 90;
+float targetBase = 90, targetTilt = 90;
+
+float t = 0;
+
+// ===== STATES =====
+enum Emotion { HAPPY, ANGRY, DROWSY, SLEEP, WAKE, CUDDLE };
+Emotion state = HAPPY;
+
+// ===== TOUCH =====
+bool lastTouch = LOW;
+bool touching = false;
+
+int tapCount = 0;
+unsigned long lastTapTime = 0;
+unsigned long touchStart = 0;
+
+// ===== TIMERS =====
+unsigned long lastInteraction = 0;
+unsigned long wakeStart = 0;
+unsigned long angryStart = 0;
+unsigned long drowsyStart = 0;
+
+// ===== BLINK =====
+unsigned long lastBlink = 0;
+bool blinking = false;
+int blinkStep = 0;
+
+// ===== RAIN =====
+int rainY[10];
+
+// ===== SETUP =====
+void setup() {
+  pinMode(TOUCH_PIN, INPUT);
+
+  servoBase.attach(9);
+  servoTilt.attach(10);
+
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  display.clearDisplay();
+
+  for (int i = 0; i < 10; i++) {
+    rainY[i] = random(0, 64);
+  }
+
+  lastInteraction = millis();
+}
+
+// ===== DRAW =====
+void drawEyes(int x, int y, int mood, int h) {
+  display.clearDisplay();
+
+  // 😴 SLEEP
+  if (mood == 3) {
+    display.drawLine(30, 32, 50, 32, WHITE);
+    display.drawLine(78, 32, 98, 32, WHITE);
+
+    display.setCursor(90 + sin(millis()*0.002)*3, 10);
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.print("Zzz");
+
+    // Rain
+    for (int i = 0; i < 10; i++) {
+      display.drawPixel(10 + i * 10, rainY[i], WHITE);
+      rainY[i] += 2;
+      if (rainY[i] > 64) rainY[i] = 0;
+    }
+
+    display.display();
+    return;
+  }
+
+  // Eyes
+  display.fillRoundRect(25 + x, 32 - h / 2 + y, 25, h, 8, WHITE);
+  display.fillRoundRect(78 + x, 32 - h / 2 + y, 25, h, 8, WHITE);
+
+  // Eyelashes
+  if (mood != 1) {
+    display.drawLine(28 + x, 22 + y, 24 + x, 18 + y, WHITE);
+    display.drawLine(34 + x, 22 + y, 34 + x, 17 + y, WHITE);
+    display.drawLine(40 + x, 22 + y, 44 + x, 18 + y, WHITE);
+
+    display.drawLine(82 + x, 22 + y, 78 + x, 18 + y, WHITE);
+    display.drawLine(90 + x, 22 + y, 90 + x, 17 + y, WHITE);
+    display.drawLine(98 + x, 22 + y, 102 + x, 18 + y, WHITE);
+  }
+
+  // 😠 Angry
+  if (mood == 1) {
+    display.drawLine(25 + x, 22 + y, 50 + x, 28 + y, WHITE);
+    display.drawLine(78 + x, 28 + y, 103 + x, 22 + y, WHITE);
+  }
+
+  display.display();
+}
+
+// ===== BLINK =====
+int getBlink(int baseH, int speed) {
+  unsigned long now = millis();
+
+  if (!blinking && now - lastBlink > speed) {
+    blinking = true;
+    blinkStep = 0;
+    lastBlink = now;
+  }
+
+  int h = baseH;
+
+  if (blinking) {
+    if (blinkStep < 5) h = baseH - blinkStep * 2;
+    else if (blinkStep < 10) h = (blinkStep - 5) * 2;
+    else blinking = false;
+
+    blinkStep++;
+  }
+
+  if (h < 2) h = 2;
+  return h;
+}
+
+// ===== TOUCH =====
+void handleTouch() {
+  bool touch = digitalRead(TOUCH_PIN);
+  touching = touch;
+
+  if (touch) {
+    if (touchStart == 0) touchStart = millis();
+    if (millis() - touchStart > 400) {
+      state = CUDDLE;
+      lastInteraction = millis();
+    }
+  } else {
+    touchStart = 0;
+  }
+
+  if (touch && !lastTouch) {
+    tapCount++;
+    lastTapTime = millis();
+  }
+
+  if (!touch && millis() - lastTapTime > 300 && tapCount > 0) {
+
+    if (state == SLEEP || state == DROWSY) {
+      state = WAKE;
+      wakeStart = millis();
+    }
+    else if (tapCount == 2) {
+      state = ANGRY;
+      angryStart = millis();
+    }
+    else {
+      state = HAPPY;
+    }
+
+    tapCount = 0;
+    lastInteraction = millis();
+  }
+
+  lastTouch = touch;
+}
+
+// ===== SMOOTH =====
+void smoothMove() {
+  basePos += (targetBase - basePos) * 0.08;
+  tiltPos += (targetTilt - tiltPos) * 0.08;
+
+  servoBase.write(basePos);
+  servoTilt.write(tiltPos);
+}
+
+// ===== LOOP =====
+void loop() {
+
+  handleTouch();
+  unsigned long now = millis();
+
+  // Sleep flow
+  if (now - lastInteraction > 25000 && state == HAPPY) {
+    state = DROWSY;
+    drowsyStart = now;
+  }
+
+  if (now - lastInteraction > 30000 && state == DROWSY) {
+    state = SLEEP;
+  }
+
+  // ===== STATES =====
+
+  if (state == HAPPY) {
+    targetBase = 90 + 20 * sin(t);
+    targetTilt = 90 + 15 * sin(t * 0.6);
+
+    drawEyes((targetBase - 90) / 2, (targetTilt - 90) / 3, 0, getBlink(18, 3000));
+    t += 0.04;
+  }
+
+  else if (state == DROWSY) {
+    float p = (millis() - drowsyStart) / 5000.0;
+    if (p > 1) p = 1;
+
+    int h = 18 - p * 10;
+
+    targetBase = 90 + 10 * sin(t);
+    targetTilt = 95 + 5 * sin(t * 0.5);
+
+    drawEyes(0, 0, 0, getBlink(h, 6000));
+    t += 0.02;
+  }
+
+  else if (state == SLEEP) {
+    targetBase = 90;
+    targetTilt = 95 + 2 * sin(millis() * 0.002);
+
+    drawEyes(0, 0, 3, 2);
+  }
+
+  else if (state == ANGRY) {
+    if (millis() - angryStart < 1200) {
+      int dir = random(0, 2) ? 1 : -1;
+      targetBase = 90 + dir * 35;
+      targetTilt = 90;
+
+      drawEyes((targetBase - 90) / 2, 0, 1, 8);
+    } else {
+      state = HAPPY;
+    }
+  }
+
+  else if (state == CUDDLE) {
+    if (!touching) {
+      state = HAPPY;
+      return;
+    }
+
+    targetBase = 90;
+    targetTilt = 105;
+
+    drawEyes(0, 5, 0, getBlink(18, 4000));
+  }
+
+  else if (state == WAKE) {
+    if (millis() - wakeStart < 1500) {
+      targetBase = 90 + 10 * sin(millis() * 0.02);
+      targetTilt = 90 + 10 * cos(millis() * 0.02);
+
+      drawEyes(0, 0, 0, getBlink(18, 2000));
+    } else {
+      state = HAPPY;
+      lastInteraction = millis();
+    }
+  }
+
+  smoothMove();
